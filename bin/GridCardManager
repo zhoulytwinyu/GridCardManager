@@ -11,6 +11,7 @@ import pickle, json
 from nacl import pwhash, secret, utils
 from pathlib import Path
 import os
+import readline
 import shlex
 from getpass import getpass
 
