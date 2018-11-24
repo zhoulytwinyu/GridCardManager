@@ -1,0 +1,125 @@
+#!/usr/bin/env python
+"""
+Usage:
+  <script>.py --columns <columns> --rows <rows> --grid <grid>
+  <script>.py --retrieve <cells>
+  <script>.py --interactive
+"""
+
+from docopt import docopt
+import pickle, json
+from nacl import pwhash, secret, utils
+from pathlib import Path
+import os
+import shlex
+from getpass import getpass
+
+def encryptGridData(columns,rows,grid,password,configFolder="./"):
+  assert(len(columns)*len(rows)==len(grid))
+  keyConfigFile = os.path.join(configFolder,"key.conf.pickle")
+  data = {  "columns":columns,
+            "rows":rows,
+            "grid":grid
+            }
+  gridData = json.dumps(data,indent=2).encode()
+  kdf = pwhash.argon2i.kdf
+  salt = utils.random(pwhash.argon2i.SALTBYTES)
+  ops = pwhash.argon2i.OPSLIMIT_MODERATE
+  mem = pwhash.argon2i.MEMLIMIT_MODERATE
+  keyConfig = {"ops":ops, "mem":mem, "salt": salt}
+  with open(keyConfigFile,"wb") as fout:
+    pickle.dump(keyConfig,fout)
+  key = kdf( secret.SecretBox.KEY_SIZE, password, salt,
+                    opslimit=ops, memlimit=mem)
+  box = secret.SecretBox(key)
+  encrypted = box.encrypt(gridData)
+  return encrypted
+
+def decryptGridData(encrypted,password,configFolder="./"):
+  keyConfigFile = os.path.join(configFolder,"key.conf.pickle")
+  keyConfig = None
+  if not os.path.isfile(keyConfigFile):
+    raise FileNotFoundError("Key config file not found at {}".format(keyConfigFile))
+  with open(keyConfigFile,"rb") as fin:
+    keyConfig = pickle.load(fin)
+  kdf = pwhash.argon2i.kdf
+  key = kdf(secret.SecretBox.KEY_SIZE, password, keyConfig["salt"],
+               opslimit=keyConfig["ops"], memlimit=keyConfig["mem"])
+  box = secret.SecretBox(key)
+  decrypted = box.decrypt(encrypted).decode()
+  grid=json.loads(decrypted)
+  return grid
+
+def getGrid(columns, rows, grid):
+  gridArray = [[] for i in range(len(rows)+1)]
+  for col in ['']+columns:
+    gridArray[0].append(col)
+  
+  for i,r in enumerate(rows,1):
+    for col in [r]+grid[(i-1)*len(columns):i*len(columns)]:
+      gridArray[i].append(col)
+
+  for i,r in enumerate(gridArray):
+    gridArray[i] = ''.join(map(lambda x:"{:>3}".format(x),r))
+    
+  return '\n'.join(gridArray)
+  
+def getCell(columns, rows, grid, cells):
+  LUT = {}
+  i=0
+  for r in rows:
+    for c in columns:
+      LUT[c+r] = grid[i]
+      i+=1
+  return ''.join([LUT[cell] for cell in cells])
+  
+if __name__=="__main__":
+  options = docopt(__doc__)
+  configFolder = os.path.expanduser("~/.config/GridCardManager")
+  gridFile = os.path.join(configFolder,"grid.crypt")
+  Path(configFolder).mkdir(parents=True, exist_ok=True) 
+
+  if options["--columns"] and  options["--rows"] and options["--grid"]:
+    columns = options["<columns>"].split(' ')
+    rows = options["<rows>"].split(' ')
+    grid = options["<grid>"].split(' ')
+    password = getpass().encode()
+    encrypted = encryptGridData(columns,rows,grid,password,configFolder)
+    with open(gridFile,"wb") as fout:
+      fout.write(encrypted)
+      
+  if options["--retrieve"]:
+    cells = options["<cells>"]
+    password = getpass().encode()
+    encrypted = None
+    if not os.path.isfile(gridFile):
+      raise FileNotFoundError("Grid file not found at {}".format(gridFile))
+    with open(gridFile,"rb") as fin:
+      encrypted = fin.read()
+    gridData = decryptGridData(encrypted,password,configFolder)
+    if cells=="all":
+      print(getGrid(gridData["columns"],gridData["rows"],gridData["grid"]))
+    else:
+      cells = cells.split(' ')
+      print(getCell(gridData["columns"],gridData["rows"],gridData["grid"],cells))
+
+  if options["--interactive"]:
+    password = getpass().encode()
+    encrypted = None
+    if not os.path.isfile(gridFile):
+      raise FileNotFoundError("Grid file not found at {}".format(gridFile))
+    with open(gridFile,"rb") as fin:
+      encrypted = fin.read()
+    gridData = decryptGridData(encrypted,password,configFolder)
+    ans = ""
+    while ans != "q":
+      cells = shlex.split(ans)
+      if len(cells) == 0 :
+        pass
+      else:
+        try:
+          print(getCell(gridData["columns"],gridData["rows"],gridData["grid"],cells))
+        except Exception:
+          print("Cells not in grid. Check your input.")
+      ans=input("Enter cells to retrive: ")
+      
